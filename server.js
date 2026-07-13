@@ -261,11 +261,11 @@ app.get('/api/tickets/:id', async (req, res) => {
 });
 
 // POST /api/tickets — создание тикета
-// body: { subject, departmentId, description, email, priority, contactId }
+// body: { subject, departmentId, description, email, name, memberId, phone, contactId }
 app.post('/api/tickets', async (req, res) => {
   if (!checkEnv(res)) return;
   try {
-    const { subject, departmentId, description, email, priority, contactId } = req.body;
+    const { subject, departmentId, description, email, name, memberId, phone, contactId } = req.body;
 
     if (!subject || !subject.trim()) {
       return res.status(400).json({ error: 'Subject is required' });
@@ -274,15 +274,48 @@ app.post('/api/tickets', async (req, res) => {
       return res.status(400).json({ error: 'Please choose a category' });
     }
 
+    // Разбиваем полное имя на имя/фамилию для контакта Zoho
+    let firstName, lastName;
+    if (name && name.trim()) {
+      const parts = name.trim().split(/\s+/);
+      lastName = parts.length > 1 ? parts.slice(1).join(' ') : parts[0];
+      firstName = parts.length > 1 ? parts[0] : undefined;
+    }
+
+    // Zoho Desk ТРЕБУЕТ contact с обязательным lastName. Если имя не
+    // заполнено — подставляем часть до @ из email, а в крайнем случае
+    // "Portal User", чтобы Zoho не отклонил запрос.
+    if (!lastName) {
+      if (email && email.includes('@')) {
+        lastName = email.split('@')[0];
+      } else {
+        lastName = 'Portal User';
+      }
+    }
+
+    // Member ID добавляем в описание, чтобы агент его видел
+    // (для отдельного поля нужно кастомное поле в Zoho Desk).
+    let fullDescription = description || '';
+    if (memberId && memberId.trim()) {
+      fullDescription += `\n\n--- Member ID: ${memberId.trim()} ---`;
+    }
+
+    // Данные контакта Zoho ожидает во ВЛОЖЕННОМ объекте contact,
+    // а не в корне тикета. Zoho сам создаст или сопоставит контакт.
+    const contact = { lastName };
+    if (firstName) contact.firstName = firstName;
+    if (email) contact.email = email;
+    if (phone) contact.phone = phone;
+
     const payload = {
       subject: subject.trim(),
       departmentId,
-      description: description || '',
-      priority: priority || 'Medium',
-      // Zoho Desk требует contact — либо contactId существующего
-      // контакта, либо email для авто-создания/поиска контакта.
-      ...(contactId ? { contactId } : {}),
-      ...(email ? { email } : {}),
+      description: fullDescription,
+      // Либо готовый contactId, либо inline-объект contact.
+      ...(contactId ? { contactId } : { contact }),
+      // Если у тебя есть кастомное поле для Member ID в Zoho Desk,
+      // раскомментируй и подставь его API-имя:
+      // cf: { cf_member_id: memberId || '' },
     };
 
     const data = await zohoFetch('/tickets', {
