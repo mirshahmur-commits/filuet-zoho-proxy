@@ -123,6 +123,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 app.use(cors());
@@ -134,6 +135,11 @@ const {
   ZOHO_REFRESH_TOKEN,
   ZOHO_ORG_ID,
   ZOHO_DC = 'eu',
+  // Общий секрет между бэкендом e-com сайта и этим прокси.
+  // Им e-com ПОДПИСЫВАЕТ токен клиента, а мы его ПРОВЕРЯЕМ.
+  // Должен быть длинной случайной строкой, храниться ТОЛЬКО на
+  // серверах (в Environment Variables), никогда в браузере.
+  PORTAL_JWT_SECRET,
   PORT = 3000,
 } = process.env;
 
@@ -324,6 +330,119 @@ app.post('/api/tickets', async (req, res) => {
     });
 
     res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+/* =================================================================
+   PORTAL SESSION (вход клиента через токен от e-com сайта)
+   -----------------------------------------------------------------
+   Клиент уже залогинен на e-com сайте. При переходе на портал e-com
+   генерирует подписанный JWT с данными клиента и передаёт его сюда.
+   Мы проверяем подпись общим секретом (PORTAL_JWT_SECRET) — если
+   подпись верна, значит данным можно доверять (подделать нельзя,
+   не зная секрета).
+
+   Ожидаемые поля (claims) в токене от e-com:
+     email      (обязательно) — email клиента
+     name       (опционально) — имя клиента
+     memberId   (опционально) — Herbalife Member ID
+     exp        (обязательно) — время истечения токена (защита от
+                                повторного использования старого токена)
+
+   Токен передаётся в заголовке: Authorization: Bearer <token>
+   ================================================================= */
+
+/* -----------------------------------------------------------------
+   ВРЕМЕННЫЙ DEV-ENDPOINT — имитация перехода с e-com сайта.
+   Открой в браузере:
+     https://<твой-прокси>.onrender.com/api/dev-login
+   и он сгенерирует токен для тестовой почты и перекинет тебя на
+   портал уже «залогиненной». Это ЗАГЛУШКА вместо e-com — когда
+   e-com подключит настоящую передачу, этот endpoint нужно УДАЛИТЬ.
+   ----------------------------------------------------------------- */
+const DEV_LOGIN_ENABLED = true; // ← поставь false / удали блок, когда e-com заработает
+const DEV_PORTAL_URL = process.env.PORTAL_URL
+  || 'https://mirshahmur-commits.github.io/filuet-zoho-frontend/my-tickets.html';
+
+app.get('/api/dev-login', (req, res) => {
+  if (!DEV_LOGIN_ENABLED) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  if (!PORTAL_JWT_SECRET) {
+    return res.status(500).json({ error: 'PORTAL_JWT_SECRET is not set on the server' });
+  }
+  // Данные тестового клиента (как их прислал бы e-com)
+  const token = jwt.sign(
+    {
+      email: 'mirshahmur@yahoo.com',
+      name: 'Mirshahmur',
+      memberId: '',
+    },
+    PORTAL_JWT_SECRET,
+    { expiresIn: '10m' }
+  );
+  // Редирект на портал с токеном — ровно как сделает e-com
+  res.redirect(`${DEV_PORTAL_URL}?token=${token}`);
+});
+
+function verifyPortalToken(req, res, next) {
+  if (!PORTAL_JWT_SECRET) {
+    return res.status(500).json({ error: 'Server misconfigured — PORTAL_JWT_SECRET is not set' });
+  }
+  const auth = req.headers.authorization || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  if (!token) {
+    return res.status(401).json({ error: 'No session token provided' });
+  }
+  try {
+    const payload = jwt.verify(token, PORTAL_JWT_SECRET);
+    if (!payload.email) {
+      return res.status(400).json({ error: 'Token is missing the email claim' });
+    }
+    req.client = {
+      email: payload.email,
+      name: payload.name || '',
+      memberId: payload.memberId || '',
+    };
+    next();
+  } catch (err) {
+    // Истёкший или поддельный токен попадёт сюда
+    return res.status(401).json({ error: 'Invalid or expired session token' });
+  }
+}
+
+// GET /api/session — проверяет токен и возвращает данные клиента
+// (портал вызывает это, чтобы узнать "кто вошёл" и заполнить форму)
+app.get('/api/session', verifyPortalToken, (req, res) => {
+  res.json(req.client);
+});
+
+// GET /api/my-tickets — тикеты ТОЛЬКО текущего клиента (по его email)
+app.get('/api/my-tickets', verifyPortalToken, async (req, res) => {
+  if (!checkEnv(res)) return;
+  try {
+    // Сначала находим контакт Zoho по email клиента
+    const searchParams = new URLSearchParams();
+    searchParams.set('email', req.client.email);
+    const contactSearch = await zohoFetch(`/contacts/search?${searchParams.toString()}`);
+    const contacts = contactSearch.data || [];
+
+    if (!contacts.length) {
+      // У клиента ещё нет ни одного тикета/контакта — это нормально
+      return res.json([]);
+    }
+
+    const contactId = contacts[0].id;
+    const params = new URLSearchParams();
+    params.set('contactId', contactId);
+    if (req.query.status && req.query.status !== 'all') params.set('status', req.query.status);
+    params.set('limit', req.query.limit || '50');
+
+    const data = await zohoFetch(`/tickets?${params.toString()}`);
+    res.json(data.data || []);
   } catch (err) {
     console.error(err);
     res.status(err.status || 500).json({ error: err.message });
