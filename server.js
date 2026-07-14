@@ -496,29 +496,23 @@ app.get('/api/session', verifyPortalToken, (req, res) => {
 app.get('/api/my-tickets', verifyPortalToken, async (req, res) => {
   if (!checkEnv(res)) return;
   try {
-    // Email хранится в КОНТАКТЕ. Ищем контакт через Search API с
-    // параметром searchStr (email как строка поиска), затем берём
-    // тикеты этого контакта.
-    const cp = new URLSearchParams();
-    cp.set('searchStr', req.client.email);
-    const contacts = await zohoFetch(`/contacts/search?${cp.toString()}`);
+    // Email хранится в контакте тикета. Contact Search API капризен к
+    // параметрам, поэтому берём тикеты со включённым контактом и
+    // фильтруем по email контакта на нашей стороне — надёжно и просто.
+    const params = new URLSearchParams();
+    params.set('include', 'contacts');
+    params.set('limit', req.query.limit || '100');
+    if (req.query.status && req.query.status !== 'all') params.set('status', req.query.status);
 
-    const found = (contacts.data || []).filter(
-      (c) => (c.email || '').toLowerCase() === req.client.email.toLowerCase()
-    );
+    const data = await zohoFetch(`/tickets?${params.toString()}`);
+    const email = req.client.email.toLowerCase();
 
-    if (!found.length) {
-      // Контакта с таким email нет — значит и тикетов нет
-      return res.json([]);
-    }
+    const mine = (data.data || []).filter((t) => {
+      const contactEmail = (t.contact && t.contact.email ? t.contact.email : t.email || '').toLowerCase();
+      return contactEmail === email;
+    });
 
-    const contactId = found[0].id;
-    const tp = new URLSearchParams();
-    if (req.query.status && req.query.status !== 'all') tp.set('status', req.query.status);
-    tp.set('limit', req.query.limit || '50');
-
-    const tickets = await zohoFetch(`/contacts/${contactId}/tickets?${tp.toString()}`);
-    res.json(tickets.data || []);
+    res.json(mine);
   } catch (err) {
     console.error(err);
     res.status(err.status || 500).json({ error: err.message });
