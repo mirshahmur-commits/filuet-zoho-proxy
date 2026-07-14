@@ -487,31 +487,28 @@ app.get('/api/session', verifyPortalToken, (req, res) => {
   res.json(req.client);
 });
 
-// GET /api/my-tickets — тикеты ТОЛЬКО текущего клиента (по его email)
+// GET /api/my-tickets — тикеты ТОЛЬКО текущего клиента
 app.get('/api/my-tickets', verifyPortalToken, async (req, res) => {
   if (!checkEnv(res)) return;
   try {
-    // Ищем тикеты напрямую по email клиента через Tickets Search API.
-    // Это надёжнее, чем сначала искать контакт: Zoho Desk умеет
-    // фильтровать тикеты по email контакта одним запросом.
-    const params = new URLSearchParams();
-    params.set('email', req.client.email);
-    if (req.query.status && req.query.status !== 'all') params.set('status', req.query.status);
-    params.set('limit', req.query.limit || '50');
+    // Email хранится в КОНТАКТЕ, а не в поле тикета. Поэтому:
+    // 1) находим контакт по email, 2) берём тикеты этого контакта.
+    const cp = new URLSearchParams();
+    cp.set('email', req.client.email);
+    const contacts = await zohoFetch(`/contacts?${cp.toString()}`);
 
-    let data;
-    try {
-      data = await zohoFetch(`/tickets/search?${params.toString()}`);
-    } catch (searchErr) {
-      // Search API возвращает 422/404, если совпадений нет — это не ошибка
-      if (searchErr.status === 404 || searchErr.status === 422) {
-        return res.json([]);
-      }
-      throw searchErr;
+    if (!(contacts.data || []).length) {
+      // Контакта с таким email ещё нет — значит и тикетов нет
+      return res.json([]);
     }
 
-    // Search API кладёт результаты в поле data
-    res.json(data.data || []);
+    const contactId = contacts.data[0].id;
+    const tp = new URLSearchParams();
+    if (req.query.status && req.query.status !== 'all') tp.set('status', req.query.status);
+    tp.set('limit', req.query.limit || '50');
+
+    const tickets = await zohoFetch(`/contacts/${contactId}/tickets?${tp.toString()}`);
+    res.json(tickets.data || []);
   } catch (err) {
     console.error(err);
     res.status(err.status || 500).json({ error: err.message });
