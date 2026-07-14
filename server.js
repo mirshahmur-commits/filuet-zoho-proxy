@@ -254,6 +254,50 @@ app.get('/api/tickets', async (req, res) => {
   }
 });
 
+/* -----------------------------------------------------------------
+   ВРЕМЕННЫЙ ДИАГНОСТИЧЕСКИЙ ENDPOINT — помогает понять, почему поиск
+   по email не находит тикеты. Открой в браузере:
+     https://<прокси>.onrender.com/api/debug?email=mirshahmur@yahoo.com
+   Покажет: сколько всего тикетов, какие у них email, и что вернул
+   поиск по email. УДАЛИ этот блок, когда всё заработает.
+   ----------------------------------------------------------------- */
+app.get('/api/debug', async (req, res) => {
+  if (!checkEnv(res)) return;
+  const email = req.query.email || '';
+  const out = {};
+  try {
+    // 1. Последние тикеты в системе (какие вообще есть и с каким email)
+    const all = await zohoFetch('/tickets?limit=20&include=contacts');
+    out.allTicketsCount = (all.data || []).length;
+    out.allTickets = (all.data || []).map((t) => ({
+      id: t.ticketNumber || t.id,
+      subject: t.subject,
+      email: t.email,
+      contactEmail: t.contact ? t.contact.email : undefined,
+    }));
+  } catch (e) {
+    out.allTicketsError = e.message;
+  }
+
+  try {
+    // 2. Что возвращает поиск по email
+    const p = new URLSearchParams();
+    p.set('email', email);
+    p.set('limit', '50');
+    const search = await zohoFetch(`/tickets/search?${p.toString()}`);
+    out.searchByEmailCount = (search.data || []).length;
+    out.searchByEmail = (search.data || []).map((t) => ({
+      id: t.ticketNumber || t.id,
+      subject: t.subject,
+    }));
+  } catch (e) {
+    out.searchError = e.message;
+    out.searchErrorStatus = e.status;
+  }
+
+  res.json(out);
+});
+
 // GET /api/tickets/:id
 app.get('/api/tickets/:id', async (req, res) => {
   if (!checkEnv(res)) return;
