@@ -295,17 +295,22 @@ app.get('/api/debug', async (req, res) => {
     out.searchErrorStatus = e.status;
   }
 
-  // 3. Ищем контакт по email через список контактов с фильтром
+  // 3. Ищем контакт по email через Search API (searchStr)
   try {
     const cp = new URLSearchParams();
-    cp.set('email', email);
-    const contacts = await zohoFetch(`/contacts?${cp.toString()}`);
-    out.contactsByEmailCount = (contacts.data || []).length;
-    out.contacts = (contacts.data || []).map((c) => ({ id: c.id, email: c.email }));
+    cp.set('searchStr', email);
+    const contacts = await zohoFetch(`/contacts/search?${cp.toString()}`);
+    out.searchContactsRawCount = (contacts.data || []).length;
+    out.searchContactsRaw = (contacts.data || []).map((c) => ({ id: c.id, email: c.email }));
+
+    const found = (contacts.data || []).filter(
+      (c) => (c.email || '').toLowerCase() === email.toLowerCase()
+    );
+    out.matchedContactsCount = found.length;
 
     // 4. Если контакт найден — берём его тикеты
-    if ((contacts.data || []).length) {
-      const cid = contacts.data[0].id;
+    if (found.length) {
+      const cid = found[0].id;
       const tickets = await zohoFetch(`/contacts/${cid}/tickets?limit=50`);
       out.contactTicketsCount = (tickets.data || []).length;
       out.contactTickets = (tickets.data || []).map((t) => ({
