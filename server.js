@@ -491,19 +491,23 @@ app.get('/api/session', verifyPortalToken, (req, res) => {
 app.get('/api/my-tickets', verifyPortalToken, async (req, res) => {
   if (!checkEnv(res)) return;
   try {
-    // Email хранится в КОНТАКТЕ, а не в поле тикета. Поэтому:
-    // 1) находим контакт по email через Contact Search API,
-    // 2) берём тикеты этого контакта.
+    // Email хранится в КОНТАКТЕ. Ищем контакт через Search API с
+    // параметром searchStr (email как строка поиска), затем берём
+    // тикеты этого контакта.
     const cp = new URLSearchParams();
-    cp.set('email', req.client.email);
+    cp.set('searchStr', req.client.email);
     const contacts = await zohoFetch(`/contacts/search?${cp.toString()}`);
 
-    if (!(contacts.data || []).length) {
-      // Контакта с таким email ещё нет — значит и тикетов нет
+    const found = (contacts.data || []).filter(
+      (c) => (c.email || '').toLowerCase() === req.client.email.toLowerCase()
+    );
+
+    if (!found.length) {
+      // Контакта с таким email нет — значит и тикетов нет
       return res.json([]);
     }
 
-    const contactId = contacts.data[0].id;
+    const contactId = found[0].id;
     const tp = new URLSearchParams();
     if (req.query.status && req.query.status !== 'all') tp.set('status', req.query.status);
     tp.set('limit', req.query.limit || '50');
