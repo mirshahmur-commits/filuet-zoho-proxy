@@ -379,7 +379,7 @@ app.get('/api/dev-login', (req, res) => {
     {
       email: 'mirshahmur@yahoo.com',
       name: 'Mirshahmur',
-      memberId: '',
+      memberId: 'HL-000123',
     },
     PORTAL_JWT_SECRET,
     { expiresIn: '10m' }
@@ -424,24 +424,26 @@ app.get('/api/session', verifyPortalToken, (req, res) => {
 app.get('/api/my-tickets', verifyPortalToken, async (req, res) => {
   if (!checkEnv(res)) return;
   try {
-    // Сначала находим контакт Zoho по email клиента
-    const searchParams = new URLSearchParams();
-    searchParams.set('email', req.client.email);
-    const contactSearch = await zohoFetch(`/contacts/search?${searchParams.toString()}`);
-    const contacts = contactSearch.data || [];
-
-    if (!contacts.length) {
-      // У клиента ещё нет ни одного тикета/контакта — это нормально
-      return res.json([]);
-    }
-
-    const contactId = contacts[0].id;
+    // Ищем тикеты напрямую по email клиента через Tickets Search API.
+    // Это надёжнее, чем сначала искать контакт: Zoho Desk умеет
+    // фильтровать тикеты по email контакта одним запросом.
     const params = new URLSearchParams();
-    params.set('contactId', contactId);
+    params.set('email', req.client.email);
     if (req.query.status && req.query.status !== 'all') params.set('status', req.query.status);
     params.set('limit', req.query.limit || '50');
 
-    const data = await zohoFetch(`/tickets?${params.toString()}`);
+    let data;
+    try {
+      data = await zohoFetch(`/tickets/search?${params.toString()}`);
+    } catch (searchErr) {
+      // Search API возвращает 422/404, если совпадений нет — это не ошибка
+      if (searchErr.status === 404 || searchErr.status === 422) {
+        return res.json([]);
+      }
+      throw searchErr;
+    }
+
+    // Search API кладёт результаты в поле data
     res.json(data.data || []);
   } catch (err) {
     console.error(err);
