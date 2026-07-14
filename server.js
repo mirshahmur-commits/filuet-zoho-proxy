@@ -295,6 +295,29 @@ app.get('/api/debug', async (req, res) => {
     out.searchErrorStatus = e.status;
   }
 
+  // 3. Ищем контакт по email через список контактов с фильтром
+  try {
+    const cp = new URLSearchParams();
+    cp.set('email', email);
+    const contacts = await zohoFetch(`/contacts?${cp.toString()}`);
+    out.contactsByEmailCount = (contacts.data || []).length;
+    out.contacts = (contacts.data || []).map((c) => ({ id: c.id, email: c.email }));
+
+    // 4. Если контакт найден — берём его тикеты
+    if ((contacts.data || []).length) {
+      const cid = contacts.data[0].id;
+      const tickets = await zohoFetch(`/contacts/${cid}/tickets?limit=50`);
+      out.contactTicketsCount = (tickets.data || []).length;
+      out.contactTickets = (tickets.data || []).map((t) => ({
+        id: t.ticketNumber || t.id,
+        subject: t.subject,
+      }));
+    }
+  } catch (e) {
+    out.contactLookupError = e.message;
+    out.contactLookupStatus = e.status;
+  }
+
   res.json(out);
 });
 
